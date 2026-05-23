@@ -18,11 +18,159 @@ DATA_DIR = os.environ.get("DATA_DIR", ".")
 STATE_FILE = os.path.join(DATA_DIR, "bot_state.json")
 
 
-class _HealthHandler(BaseHTTPRequestHandler):
+_DASHBOARD_HTML = """<!DOCTYPE html>
+<html lang="pt"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>🤖 Day Trade Bot — BTC/CAD</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#0d1117;color:#e6edf3;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;padding:16px;min-height:100vh}
+h1{font-size:18px;font-weight:600;color:#58a6ff;margin-bottom:16px;display:flex;align-items:center;gap:8px}
+h1 span{color:#8b949e;font-size:13px;font-weight:400}
+.cards{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:16px}
+@media(max-width:700px){.cards{grid-template-columns:repeat(2,1fr)}}
+.card{background:#161b22;border:1px solid #30363d;border-radius:10px;padding:16px}
+.card-label{font-size:11px;color:#8b949e;text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px}
+.card-value{font-size:22px;font-weight:700;font-variant-numeric:tabular-nums}
+.card-sub{font-size:11px;color:#8b949e;margin-top:4px}
+.green{color:#3fb950}.red{color:#f85149}.yellow{color:#d29922}.blue{color:#58a6ff}.grey{color:#8b949e}
+.log-wrap{background:#010409;border:1px solid #30363d;border-radius:10px;overflow:hidden}
+.log-toolbar{background:#161b22;border-bottom:1px solid #30363d;padding:10px 14px;display:flex;align-items:center;justify-content:space-between}
+.log-title{font-size:12px;color:#8b949e;font-weight:500}
+.badge{font-size:10px;padding:2px 8px;border-radius:20px;background:#21262d;color:#8b949e}
+.badge.live{background:#0f3d1a;color:#3fb950}
+#log-container{height:calc(100vh - 280px);overflow-y:auto;padding:10px 14px;font-family:'SFMono-Regular','Cascadia Code',Consolas,monospace;font-size:11.5px;line-height:1.6}
+.lb{color:#3fb950;font-weight:600}.ls{color:#f85149;font-weight:600}.lw{color:#d29922}
+.le{color:#f85149;background:#1a0a0a;border-left:2px solid #f85149;padding-left:6px}
+.lh{color:#58a6ff;font-weight:600}.ld{color:#8b949e}
+.bull{color:#3fb950}.bear{color:#f85149}
+::-webkit-scrollbar{width:6px}::-webkit-scrollbar-track{background:#010409}::-webkit-scrollbar-thumb{background:#30363d;border-radius:3px}
+</style></head>
+<body>
+<h1>🤖 Day Trade Bot — BTC/CAD <span id="ts"></span></h1>
+<div class="cards">
+  <div class="card">
+    <div class="card-label">Preço BTC/CAD</div>
+    <div class="card-value blue" id="c-price">—</div>
+    <div class="card-sub" id="c-st">—</div>
+  </div>
+  <div class="card">
+    <div class="card-label">Saldo Simulado</div>
+    <div class="card-value" id="c-balance">—</div>
+    <div class="card-sub" id="c-pnl">—</div>
+  </div>
+  <div class="card">
+    <div class="card-label">Posição</div>
+    <div class="card-value" id="c-pos">—</div>
+    <div class="card-sub" id="c-entry">—</div>
+  </div>
+  <div class="card">
+    <div class="card-label">RSI / MACD</div>
+    <div class="card-value" id="c-rsi">—</div>
+    <div class="card-sub" id="c-vol">—</div>
+  </div>
+</div>
+<div class="log-wrap">
+  <div class="log-toolbar">
+    <span class="log-title">Logs em tempo real</span>
+    <span class="badge live" id="status-badge">● AO VIVO</span>
+  </div>
+  <div id="log-container"></div>
+</div>
+<script>
+function esc(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}
+function cls(l){
+  if(l.includes('🟢')||l.includes('COMPRA')) return 'lb';
+  if(l.includes('🔴')||l.includes('VENDA')||l.includes('💰')) return 'ls';
+  if(l.includes('WARNING')||l.includes('⛔')) return 'lw';
+  if(l.includes('ERROR')||l.includes('Erro')) return 'le';
+  if(l.includes('🤖')||l.includes('====')) return 'lh';
+  if(l.includes('⏳')) return 'ld';
+  return '';
+}
+function stCls(l){return l.includes('🟩')?'bull':l.includes('🟥')?'bear':''}
+async function refresh(){
+  try{
+    const [lr,sr]=await Promise.all([fetch('/api/logs'),fetch('/api/state')]);
+    const {lines}=await lr.json();
+    const st=await sr.json();
+    // state cards
+    const bal=st.simulated_fiat||1000;
+    const init=st.initial_fiat||1000;
+    const pnl=bal-init;
+    document.getElementById('c-balance').textContent=bal.toFixed(2)+' CAD';
+    document.getElementById('c-balance').className='card-value '+(pnl>=0?'green':'red');
+    document.getElementById('c-pnl').textContent=(pnl>=0?'+':'')+pnl.toFixed(2)+' CAD acumulado';
+    if(st.in_position){
+      document.getElementById('c-pos').textContent='🟢 EM POSIÇÃO';
+      document.getElementById('c-pos').className='card-value green';
+      document.getElementById('c-entry').textContent='Entrada: '+Number(st.entry_price).toFixed(2);
+    }else{
+      document.getElementById('c-pos').textContent='⚪ SEM POSIÇÃO';
+      document.getElementById('c-pos').className='card-value grey';
+      document.getElementById('c-entry').textContent='—';
+    }
+    // parse last price line
+    const pl=[...lines].reverse().find(l=>l.includes('Preço:'));
+    if(pl){
+      const pm=pl.match(/Preço:([\d.]+)/);
+      if(pm)document.getElementById('c-price').textContent=Number(pm[1]).toLocaleString('en-CA',{minimumFractionDigits:2,maximumFractionDigits:2});
+      const stm=pl.match(/ST:(🟩BULL|🟥BEAR)/);
+      if(stm){const sc=stCls(pl);document.getElementById('c-st').innerHTML='Supertrend: <span class="'+sc+'">'+esc(stm[1])+'</span>';}
+      const rm=pl.match(/RSI:([\d.]+)/);const mm=pl.match(/MACD_H:([-\d.]+)/);
+      if(rm)document.getElementById('c-rsi').textContent='RSI '+parseFloat(rm[1]).toFixed(1)+(mm?' | MACD '+parseInt(mm[1]):'');
+    }
+    // render logs
+    const ct=document.getElementById('log-container');
+    const atBot=ct.scrollHeight-ct.scrollTop<=ct.clientHeight+80;
+    ct.innerHTML=lines.map(l=>'<div class="'+cls(l)+'">'+esc(l)+'</div>').join('');
+    if(atBot)ct.scrollTop=ct.scrollHeight;
+    document.getElementById('ts').textContent='atualizado '+new Date().toLocaleTimeString('pt-BR');
+    document.getElementById('status-badge').className='badge live';
+    document.getElementById('status-badge').textContent='● AO VIVO';
+  }catch(e){
+    document.getElementById('status-badge').className='badge';
+    document.getElementById('status-badge').textContent='⚠ offline';
+  }
+}
+setInterval(refresh,5000);refresh();
+</script></body></html>"""
+
+
+class _WebHandler(BaseHTTPRequestHandler):
     def do_GET(self):
-        self.send_response(200)
+        if self.path == '/api/logs':
+            self._api_logs()
+        elif self.path == '/api/state':
+            self._api_state()
+        else:
+            self._serve(200, 'text/html; charset=utf-8', _DASHBOARD_HTML.encode())
+
+    def _api_logs(self):
+        log_file = os.path.join(DATA_DIR, "trade_log.txt")
+        lines = []
+        if os.path.exists(log_file):
+            with open(log_file, 'r', errors='replace') as f:
+                lines = f.readlines()[-300:]
+        body = json.dumps({'lines': [l.rstrip() for l in lines]}).encode()
+        self._serve(200, 'application/json', body)
+
+    def _api_state(self):
+        state = {}
+        if os.path.exists(STATE_FILE):
+            try:
+                with open(STATE_FILE) as f:
+                    state = json.load(f)
+            except Exception:
+                pass
+        self._serve(200, 'application/json', json.dumps(state).encode())
+
+    def _serve(self, code, content_type, body):
+        self.send_response(code)
+        self.send_header('Content-Type', content_type)
+        self.send_header('Content-Length', str(len(body)))
         self.end_headers()
-        self.wfile.write(b'OK')
+        self.wfile.write(body)
 
     def log_message(self, *args):
         pass
@@ -30,7 +178,7 @@ class _HealthHandler(BaseHTTPRequestHandler):
 
 def _start_health_server():
     port = int(os.environ.get('PORT', 8080))
-    HTTPServer(('0.0.0.0', port), _HealthHandler).serve_forever()
+    HTTPServer(('0.0.0.0', port), _WebHandler).serve_forever()
 
 
 threading.Thread(target=_start_health_server, daemon=True).start()
