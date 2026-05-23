@@ -138,6 +138,9 @@ setInterval(refresh,5000);refresh();
 
 
 class _WebHandler(BaseHTTPRequestHandler):
+    def do_HEAD(self):
+        self._serve_head(200, 'text/html; charset=utf-8')
+
     def do_GET(self):
         if self.path == '/api/logs':
             self._api_logs()
@@ -164,6 +167,11 @@ class _WebHandler(BaseHTTPRequestHandler):
             except Exception:
                 pass
         self._serve(200, 'application/json', json.dumps(state).encode())
+
+    def _serve_head(self, code, content_type):
+        self.send_response(code)
+        self.send_header('Content-Type', content_type)
+        self.end_headers()
 
     def _serve(self, code, content_type, body):
         self.send_response(code)
