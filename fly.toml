@@ -1,0 +1,12 @@
+app = "day-trade-bot-btc"
+primary_region = "yyz"
+
+[build]
+
+[env]
+  TZ = "UTC"
+  DATA_DIR = "/data"
+
+[[mounts]]
+  source = "bot_data"
+  destination = "/data"
