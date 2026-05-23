@@ -1,0 +1,6 @@
+services:
+  - type: web
+    name: day-trade-bot
+    runtime: docker
+    plan: free
+    healthCheckPath: /

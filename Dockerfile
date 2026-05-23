@@ -7,6 +7,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY bot_kraken.py .
 
-ENV DATA_DIR=/data
+EXPOSE 8080
 
 CMD ["python", "-u", "bot_kraken.py"]

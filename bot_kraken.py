@@ -5,15 +5,35 @@ import json
 import logging
 import datetime
 import smtplib
+import threading
 import requests as _requests
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+from http.server import HTTPServer, BaseHTTPRequestHandler
 import pandas as pd
 import pandas_ta_classic as ta
 from requests.exceptions import RequestException
 
 DATA_DIR = os.environ.get("DATA_DIR", ".")
 STATE_FILE = os.path.join(DATA_DIR, "bot_state.json")
+
+
+class _HealthHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b'OK')
+
+    def log_message(self, *args):
+        pass
+
+
+def _start_health_server():
+    port = int(os.environ.get('PORT', 8080))
+    HTTPServer(('0.0.0.0', port), _HealthHandler).serve_forever()
+
+
+threading.Thread(target=_start_health_server, daemon=True).start()
 
 
 class KrakenTradingBot:
