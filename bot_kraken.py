@@ -204,9 +204,9 @@ class KrakenTradingBot:
         self.trade_allocation = 0.25
         self.take_profit_pct = 0.025
         self.hard_stop_pct = 0.030
-        self.rsi_max_buy = 65
-        self.rsi_min_buy = 35
-        self.volume_factor = 1.2
+        self.rsi_max_buy = 72
+        self.rsi_min_buy = 30
+        self.volume_factor = 1.0
         self.max_hold_candles = 18
         self.loss_cooldown_candles = 2
         self.candles_since_loss = 999
@@ -346,7 +346,7 @@ class KrakenTradingBot:
 
         if prev_st_dir == -1 and st_dir == 1:
             return True, f"Supertrend flip BULL | RSI:{rsi:.0f} | Vol:{volume/vol_ma:.1f}x"
-        if st_dir == 1 and ema9 > ema21 and macd_h > 0 and macd_h > prev_macd_h:
+        if st_dir == 1 and ema9 > ema21 and macd_h > 0:
             return True, f"ST+EMA+MACD alinhados | RSI:{rsi:.0f} | Vol:{volume/vol_ma:.1f}x"
         return False, ""
 
@@ -468,7 +468,7 @@ class KrakenTradingBot:
             "week_start": week_start,
             "week_end": week_end,
             "symbol": self.symbol,
-            "algo_version": "v5.0",
+            "algo_version": "v5.1",
             "params": {
                 "timeframe": self.timeframe,
                 "st_length": self.st_length,
@@ -691,7 +691,7 @@ class KrakenTradingBot:
     def run(self):
         self.logger.info("=" * 70)
         self.logger.info(
-            f"🤖 Bot v5.0 (Supertrend+EMA200+RSI+Volume)"
+            f"🤖 Bot v5.1 (Supertrend+EMA200+RSI30-72+Volume1.0x)"
             f" | {self.symbol} | TF: {self.timeframe}"
         )
         self.logger.info(
