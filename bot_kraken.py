@@ -199,7 +199,7 @@ class KrakenTradingBot:
         self.quote_currency = symbol.split('/')[1]
 
         self.st_length = 10
-        self.st_multiplier = 3.0
+        self.st_multiplier = 2.5
 
         self.trade_allocation = 0.25
         self.take_profit_pct = 0.025
@@ -298,6 +298,7 @@ class KrakenTradingBot:
         df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
         df.ta.ema(length=9, append=True)
         df.ta.ema(length=21, append=True)
+        df.ta.ema(length=50, append=True)
         df.ta.ema(length=200, append=True)
         df.ta.rsi(length=14, append=True)
         df.ta.macd(fast=12, slow=26, signal=9, append=True)
@@ -324,6 +325,7 @@ class KrakenTradingBot:
         last = df.iloc[-2]
         prev = df.iloc[-3]
         price  = float(last['close'])
+        ema50  = float(last['EMA_50'])
         ema200 = float(last['EMA_200'])
         rsi    = float(last['RSI_14'])
         macd_h = float(last['MACDh_12_26_9'])
@@ -333,9 +335,12 @@ class KrakenTradingBot:
         ema21  = float(last['EMA_21'])
         st_dir      = self._get_st_dir(last)
         prev_st_dir = self._get_st_dir(prev)
-        prev_macd_h = float(prev['MACDh_12_26_9'])
 
-        if price <= ema200:
+        # Require bull-market structure (golden cross) and price above EMA50.
+        # Stricter than price>EMA200 alone: blocks bear bounces, but allows
+        # entries during pullbacks in confirmed uptrends where price dips
+        # briefly below EMA200 while EMA50 remains above it.
+        if ema50 <= ema200 or price <= ema50:
             return False, ""
         if not (self.rsi_min_buy <= rsi < self.rsi_max_buy):
             return False, ""
@@ -346,8 +351,8 @@ class KrakenTradingBot:
 
         if prev_st_dir == -1 and st_dir == 1:
             return True, f"Supertrend flip BULL | RSI:{rsi:.0f} | Vol:{volume/vol_ma:.1f}x"
-        if st_dir == 1 and ema9 > ema21 and macd_h > 0:
-            return True, f"ST+EMA+MACD alinhados | RSI:{rsi:.0f} | Vol:{volume/vol_ma:.1f}x"
+        if st_dir == 1 and ema9 > ema21:
+            return True, f"ST+EMA alinhados | RSI:{rsi:.0f} | MACD_H:{macd_h:.0f} | Vol:{volume/vol_ma:.1f}x"
         return False, ""
 
     def should_sell(self, df):
@@ -468,7 +473,7 @@ class KrakenTradingBot:
             "week_start": week_start,
             "week_end": week_end,
             "symbol": self.symbol,
-            "algo_version": "v5.1",
+            "algo_version": "v5.2",
             "params": {
                 "timeframe": self.timeframe,
                 "st_length": self.st_length,
@@ -691,7 +696,7 @@ class KrakenTradingBot:
     def run(self):
         self.logger.info("=" * 70)
         self.logger.info(
-            f"🤖 Bot v5.1 (Supertrend+EMA200+RSI30-72+Volume1.0x)"
+            f"🤖 Bot v5.2 (Supertrend2.5+GoldenCross+RSI30-72+Volume1.0x)"
             f" | {self.symbol} | TF: {self.timeframe}"
         )
         self.logger.info(
@@ -719,12 +724,13 @@ class KrakenTradingBot:
 
                 ema9   = float(last['EMA_9'])
                 ema21  = float(last['EMA_21'])
+                ema50  = float(last['EMA_50'])
                 ema200 = float(last['EMA_200'])
                 rsi    = float(last['RSI_14'])
                 macd_h = float(last['MACDh_12_26_9'])
                 st_dir = self._get_st_dir(last)
 
-                required = [ema200, rsi, macd_h]
+                required = [ema50, ema200, rsi, macd_h]
                 if any(pd.isna(v) for v in required) or self._st_dir_col is None:
                     self.logger.info("⏳ Aguardando dados suficientes...")
                     time.sleep(60)
@@ -750,9 +756,10 @@ class KrakenTradingBot:
                     cd_str = f" | cooldown:{cd}c" if cd > 0 else ""
                     pos_str = f"SEM POSIÇÃO{cd_str}"
 
+                struct = "🟩GX" if ema50 > ema200 else "🟥DX"
                 self.logger.info(
-                    f"Preço:{current_price:.2f} | ST:{st_str}"
-                    f" | EMA9:{ema9:.0f} EMA21:{ema21:.0f} EMA200:{ema200:.0f}"
+                    f"Preço:{current_price:.2f} | ST:{st_str} | {struct}"
+                    f" | EMA9:{ema9:.0f} EMA21:{ema21:.0f} EMA50:{ema50:.0f} EMA200:{ema200:.0f}"
                     f" | RSI:{rsi:.1f} | MACD_H:{macd_h:.0f}"
                     f" | {pos_str}"
                 )
