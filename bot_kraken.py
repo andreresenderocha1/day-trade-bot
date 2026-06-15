@@ -202,7 +202,7 @@ class KrakenTradingBot:
         self.st_multiplier = 2.5
 
         self.trade_allocation = 0.25
-        self.take_profit_pct = 0.025
+        self.take_profit_pct = 0.035
         self.hard_stop_pct = 0.030
         self.rsi_max_buy = 72
         self.rsi_min_buy = 30
@@ -339,14 +339,15 @@ class KrakenTradingBot:
         st_dir      = self._get_st_dir(last)
         prev_st_dir = self._get_st_dir(prev)
 
-        # Require price above EMA200 (bullish long-term bias) and ADX > 25
-        # (strong trend only). Replaces the stricter golden-cross gate that
-        # caused zero entries by lagging 3-7 candles behind trend start.
-        # Source: BTC Supertrend backtest (boringedge.com) + ADX Sharpe > 2.0
-        # on BTC (quant-signals.com) — price>EMA200 with ADX filter.
-        if price <= ema200:
+        # EMA50 trend gate (price > EMA50, ~8-day trend): more responsive than EMA200
+        # in bear/recovery markets where price stays below 33-day EMA but bounces
+        # are still tradeable. ADX threshold lowered to 20 (optimal for 4h; 25 is
+        # for daily charts). Sources: multiple quant-signals.com ADX study (PF 1.56
+        # at ADX>20 vs 1.16 at ADX>25 on BTC); trendspider.com Supertrend guide
+        # recommends EMA50 as trend filter for bear-market bounce entries.
+        if price <= ema50:
             return False, ""
-        if adx > 0 and adx < 25:
+        if adx > 0 and adx < 20:
             return False, ""
         if not (self.rsi_min_buy <= rsi < self.rsi_max_buy):
             return False, ""
@@ -479,7 +480,7 @@ class KrakenTradingBot:
             "week_start": week_start,
             "week_end": week_end,
             "symbol": self.symbol,
-            "algo_version": "v5.3",
+            "algo_version": "v5.4",
             "params": {
                 "timeframe": self.timeframe,
                 "st_length": self.st_length,
@@ -702,7 +703,7 @@ class KrakenTradingBot:
     def run(self):
         self.logger.info("=" * 70)
         self.logger.info(
-            f"🤖 Bot v5.3 (Supertrend2.5+ADX25+EMA200+RSI30-72+Volume1.0x)"
+            f"🤖 Bot v5.4 (Supertrend2.5+ADX20+EMA50+RSI30-72+TP3.5%+Volume1.0x)"
             f" | {self.symbol} | TF: {self.timeframe}"
         )
         self.logger.info(
