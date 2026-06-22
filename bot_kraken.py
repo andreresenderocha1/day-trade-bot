@@ -192,6 +192,25 @@ def _start_health_server():
 threading.Thread(target=_start_health_server, daemon=True).start()
 
 
+def _keepalive_ping():
+    # Render free-tier web services spin down after 15 min with no inbound HTTP
+    # traffic, which would silently kill the trading loop. Self-pinging every
+    # 10 min keeps the dyno awake. Source: Render docs (RENDER_EXTERNAL_URL is
+    # auto-set on web services) + community guidance on the free-tier sleep policy.
+    self_url = os.environ.get('RENDER_EXTERNAL_URL')
+    if not self_url:
+        return
+    while True:
+        time.sleep(600)
+        try:
+            _requests.get(self_url, timeout=10)
+        except Exception:
+            pass
+
+
+threading.Thread(target=_keepalive_ping, daemon=True).start()
+
+
 class KrakenTradingBot:
     def __init__(self, symbol='BTC/CAD', timeframe='4h'):
         self.symbol = symbol
@@ -305,6 +324,7 @@ class KrakenTradingBot:
         df.ta.supertrend(length=self.st_length, multiplier=self.st_multiplier, append=True)
         df.ta.bbands(length=20, std=2.0, append=True)
         df.ta.adx(length=14, append=True)
+        df.ta.atr(length=14, append=True)
         df['vol_ma20'] = df['volume'].rolling(20).mean()
         if self._st_dir_col is None:
             dir_cols = [c for c in df.columns if c.startswith('SUPERTd')]
@@ -373,10 +393,25 @@ class KrakenTradingBot:
         prev_st_dir = self._get_st_dir(prev)
         lucro_pct  = (current_price - self.entry_price) / self.entry_price
 
+        # ATR-scaled hard stop instead of a flat percentage: a static stop gets
+        # triggered by ordinary volatility noise rather than genuine reversal
+        # (gets "stopped out constantly... not because you were wrong, but
+        # because the market's natural movement exceeds your stop"). Scaling
+        # the stop to 2.2x ATR adapts it to the current volatility regime,
+        # clamped to the historically-safe 2.0%-4.0% band. Sources: QuantVPS
+        # ATR stop-loss guide, LuxAlgo ATR stop strategies (2-2.5x ATR sweet
+        # spot for crypto).
+        atr_col = [c for c in last.index if c.startswith('ATR')]
+        atr = float(last[atr_col[0]]) if atr_col else 0.0
+        if atr > 0 and self.entry_price > 0:
+            dynamic_stop_pct = min(max(2.2 * atr / self.entry_price, 0.020), 0.040)
+        else:
+            dynamic_stop_pct = self.hard_stop_pct
+
         if lucro_pct >= self.take_profit_pct:
             return True, f"Take Profit +{self.take_profit_pct*100:.1f}% ({lucro_pct*100:.2f}%)"
-        if lucro_pct <= -self.hard_stop_pct:
-            return True, f"Hard Stop -{self.hard_stop_pct*100:.1f}% ({lucro_pct*100:.2f}%)"
+        if lucro_pct <= -dynamic_stop_pct:
+            return True, f"Hard Stop -{dynamic_stop_pct*100:.1f}% ATR-adj ({lucro_pct*100:.2f}%)"
         if self.candles_in_position >= self.max_hold_candles:
             return True, f"Max hold {self.max_hold_candles} candles ({lucro_pct*100:.2f}%)"
         if prev_st_dir == 1 and st_dir == -1:
@@ -480,7 +515,7 @@ class KrakenTradingBot:
             "week_start": week_start,
             "week_end": week_end,
             "symbol": self.symbol,
-            "algo_version": "v5.4",
+            "algo_version": "v5.5",
             "params": {
                 "timeframe": self.timeframe,
                 "st_length": self.st_length,
@@ -703,7 +738,7 @@ class KrakenTradingBot:
     def run(self):
         self.logger.info("=" * 70)
         self.logger.info(
-            f"🤖 Bot v5.4 (Supertrend2.5+ADX20+EMA50+RSI30-72+TP3.5%+Volume1.0x)"
+            f"🤖 Bot v5.5 (Supertrend2.5+ADX20+EMA50+RSI30-72+TP3.5%+ATR-stop+KeepAlive)"
             f" | {self.symbol} | TF: {self.timeframe}"
         )
         self.logger.info(
