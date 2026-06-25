@@ -239,9 +239,16 @@ class KrakenTradingBot:
         self._st_dir_col = None
         self._st_val_col = None
 
-        # Weekly reporting
+        # Reporting (ciclo PDCA de 5 dias)
+        self.report_interval_days = 5
         self.week_trades = []
         self.weekly_report_sent_date = ""
+        self.last_report_date = datetime.datetime.utcnow().strftime("%Y-%m-%d")
+
+        # Backup de estado em Gist (disco do Render free é efêmero)
+        self._state_gist_desc = "day-trade-bot-state"
+        self._state_gist_id = None
+        self._last_gist_save = 0.0
 
         self.setup_logging()
         self.load_state()
@@ -272,7 +279,7 @@ class KrakenTradingBot:
 
     # ── State persistence ─────────────────────────────────────────────────────
 
-    def save_state(self):
+    def save_state(self, force_backup=False):
         state = {
             "simulated_fiat": self.simulated_fiat,
             "in_position": self.in_position,
@@ -282,19 +289,97 @@ class KrakenTradingBot:
             "candles_since_loss": self.candles_since_loss,
             "week_trades": self.week_trades,
             "weekly_report_sent_date": self.weekly_report_sent_date,
+            "last_report_date": self.last_report_date,
         }
         try:
             with open(STATE_FILE, 'w') as f:
                 json.dump(state, f)
         except Exception as e:
             self.logger.error(f"Erro ao salvar estado: {e}")
+        self.backup_state_to_gist(state, force=force_backup)
+
+    def backup_state_to_gist(self, state, force=False):
+        token = os.environ.get('GITHUB_PAT')
+        if not token:
+            return
+        now = time.time()
+        if not force and (now - self._last_gist_save) < 300:
+            return
+        headers = {
+            'Authorization': f'token {token}',
+            'Accept': 'application/vnd.github.v3+json',
+        }
+        content = json.dumps(state, ensure_ascii=False)
+        try:
+            if self._state_gist_id is None:
+                r = _requests.get(
+                    'https://api.github.com/gists',
+                    headers=headers, params={'per_page': 50}, timeout=15
+                )
+                if r.ok:
+                    for g in r.json():
+                        if g.get('description') == self._state_gist_desc:
+                            self._state_gist_id = g['id']
+                            break
+            payload = {'files': {'bot_state.json': {'content': content}}}
+            if self._state_gist_id:
+                _requests.patch(
+                    f'https://api.github.com/gists/{self._state_gist_id}',
+                    json=payload, headers=headers, timeout=15
+                )
+            else:
+                r = _requests.post(
+                    'https://api.github.com/gists',
+                    json={**payload, 'description': self._state_gist_desc, 'public': False},
+                    headers=headers, timeout=15
+                )
+                if r.ok:
+                    self._state_gist_id = r.json().get('id')
+            self._last_gist_save = now
+        except Exception as e:
+            self.logger.error(f"Erro backup estado (Gist): {e}")
+
+    def restore_state_from_gist(self):
+        token = os.environ.get('GITHUB_PAT')
+        if not token:
+            return None
+        headers = {
+            'Authorization': f'token {token}',
+            'Accept': 'application/vnd.github.v3+json',
+        }
+        try:
+            r = _requests.get(
+                'https://api.github.com/gists',
+                headers=headers, params={'per_page': 50}, timeout=15
+            )
+            if not r.ok:
+                return None
+            for g in r.json():
+                if g.get('description') == self._state_gist_desc:
+                    self._state_gist_id = g['id']
+                    raw = g['files']['bot_state.json']['raw_url']
+                    rc = _requests.get(raw, headers=headers, timeout=15)
+                    if rc.ok:
+                        return rc.json()
+        except Exception as e:
+            self.logger.error(f"Erro restaurando estado (Gist): {e}")
+        return None
 
     def load_state(self):
-        if not os.path.exists(STATE_FILE):
+        state = None
+        if os.path.exists(STATE_FILE):
+            try:
+                with open(STATE_FILE) as f:
+                    state = json.load(f)
+            except Exception as e:
+                self.logger.error(f"Erro ao ler estado local: {e}")
+        if state is None:
+            state = self.restore_state_from_gist()
+            if state:
+                self.logger.info("☁️  Estado restaurado do Gist (disco efêmero do Render)")
+        if state is None:
             return
         try:
-            with open(STATE_FILE) as f:
-                state = json.load(f)
             self.simulated_fiat = state.get("simulated_fiat", self.initial_fiat)
             self.in_position = state.get("in_position", False)
             self.entry_price = state.get("entry_price", 0.0)
@@ -303,6 +388,7 @@ class KrakenTradingBot:
             self.candles_since_loss = state.get("candles_since_loss", 999)
             self.week_trades = state.get("week_trades", [])
             self.weekly_report_sent_date = state.get("weekly_report_sent_date", "")
+            self.last_report_date = state.get("last_report_date", self.last_report_date)
             self.logger.info(
                 f"✅ Estado carregado: saldo={self.simulated_fiat:.2f} | em_posição={self.in_position}"
             )
@@ -488,7 +574,7 @@ class KrakenTradingBot:
                 self.position_amount = 0.0
                 self.candles_in_position = 0
 
-            self.save_state()
+            self.save_state(force_backup=True)
 
         except Exception as e:
             self.logger.error(f"Erro ao simular {action}: {e}")
@@ -497,7 +583,7 @@ class KrakenTradingBot:
 
     def generate_weekly_summary(self):
         now = datetime.datetime.utcnow()
-        week_start = (now - datetime.timedelta(days=7)).strftime("%Y-%m-%d")
+        week_start = (now - datetime.timedelta(days=self.report_interval_days)).strftime("%Y-%m-%d")
         week_end = now.strftime("%Y-%m-%d")
 
         sells = [t for t in self.week_trades if t["action"] == "SELL"]
@@ -515,7 +601,7 @@ class KrakenTradingBot:
             "week_start": week_start,
             "week_end": week_end,
             "symbol": self.symbol,
-            "algo_version": "v5.5",
+            "algo_version": "v5.6",
             "params": {
                 "timeframe": self.timeframe,
                 "st_length": self.st_length,
@@ -715,30 +801,36 @@ class KrakenTradingBot:
         except Exception as e:
             self.logger.error(f"Erro ao enviar email: {e}")
 
-    def check_weekly_report(self):
+    def check_periodic_report(self):
         now = datetime.datetime.utcnow()
-        if now.weekday() != 0:
-            return
         today = now.strftime("%Y-%m-%d")
         if self.weekly_report_sent_date == today:
             return
+        if self.last_report_date:
+            try:
+                last = datetime.datetime.strptime(self.last_report_date, "%Y-%m-%d")
+                if (now - last).days < self.report_interval_days:
+                    return
+            except ValueError:
+                pass
         # 14:00–14:59 UTC = ~10am ET
         if now.hour != 14:
             return
-        self.logger.info("📊 Gerando relatório semanal...")
+        self.logger.info(f"📊 Gerando relatório do ciclo ({self.report_interval_days} dias)...")
         summary = self.generate_weekly_summary()
         self.upload_to_gist(summary)
         self.send_email_report(summary)
         self.weekly_report_sent_date = today
+        self.last_report_date = today
         self.week_trades = []
-        self.save_state()
+        self.save_state(force_backup=True)
 
     # ── Main loop ─────────────────────────────────────────────────────────────
 
     def run(self):
         self.logger.info("=" * 70)
         self.logger.info(
-            f"🤖 Bot v5.5 (Supertrend2.5+ADX20+EMA50+RSI30-72+TP3.5%+ATR-stop+KeepAlive)"
+            f"🤖 Bot v5.6 (ST2.5+ADX20+EMA50+RSI30-72+TP3.5%+ATR-stop+KeepAlive+GistState+PDCA5d)"
             f" | {self.symbol} | TF: {self.timeframe}"
         )
         self.logger.info(
@@ -758,7 +850,7 @@ class KrakenTradingBot:
 
         while True:
             try:
-                self.check_weekly_report()
+                self.check_periodic_report()
 
                 df = self.fetch_market_data()
                 current_price = float(df.iloc[-1]['close'])
